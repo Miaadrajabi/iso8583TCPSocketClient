@@ -13,6 +13,7 @@ import com.miaad.iso8583TCPSocket.RetryCallback;
 import com.miaad.iso8583TCPSocket.ConnectionStateListener;
 import com.miaad.iso8583TCPSocket.ConnectionState;
 import com.miaad.iso8583TCPSocket.ConnectionMode;
+import com.miaad.iso8583TCPSocket.FramingOptions;
 
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -31,6 +32,7 @@ public class MainActivity extends AppCompatActivity {
     private TextView logView;
     private Button connectBtn;
     private Button sendBtn;
+    private Button sendNoHeaderBtn;
     private Button disconnectBtn;
     private CheckBox hexModeCheck;
     private Spinner lengthSizeSpinner;
@@ -123,6 +125,13 @@ public class MainActivity extends AppCompatActivity {
         sendBtn.setEnabled(false);
         sendBtn.setOnClickListener(v -> send());
         buttonLayout.addView(sendBtn);
+
+        // Send without header (TMS-style)
+        sendNoHeaderBtn = new Button(this);
+        sendNoHeaderBtn.setText("Send (No Header)");
+        sendNoHeaderBtn.setEnabled(false);
+        sendNoHeaderBtn.setOnClickListener(v -> sendNoHeader());
+        buttonLayout.addView(sendNoHeaderBtn);
 
         disconnectBtn = new Button(this);
         disconnectBtn.setText("Disconnect");
@@ -408,6 +417,7 @@ public class MainActivity extends AppCompatActivity {
                     log("Engine: " + client.getEngineType());
                     connectBtn.setEnabled(false);
                     sendBtn.setEnabled(true);
+                    sendNoHeaderBtn.setEnabled(true);
                     disconnectBtn.setEnabled(true);
                 });
 
@@ -421,6 +431,7 @@ public class MainActivity extends AppCompatActivity {
                     client = null;
                     connectBtn.setEnabled(true);
                     sendBtn.setEnabled(false);
+                    sendNoHeaderBtn.setEnabled(false);
                     disconnectBtn.setEnabled(false);
                 });
             } finally {
@@ -460,6 +471,7 @@ public class MainActivity extends AppCompatActivity {
                 runOnUiThread(() -> {
                     log("Sending " + data.length + " bytes...");
                     sendBtn.setEnabled(false);
+                    sendNoHeaderBtn.setEnabled(false);
                     disconnectBtn.setText("Cancel");
                 });
 
@@ -480,12 +492,14 @@ public class MainActivity extends AppCompatActivity {
                         log("Connection kept open (autoCloseAfterResponse = false)");
                         connectBtn.setEnabled(false);
                         sendBtn.setEnabled(true);
+                        sendNoHeaderBtn.setEnabled(true);
                         disconnectBtn.setEnabled(true);
                         disconnectBtn.setText("Disconnect");
                     } else {
                         log("Connection closed after receiving response");
                         connectBtn.setEnabled(true);
                         sendBtn.setEnabled(false);
+                        sendNoHeaderBtn.setEnabled(false);
                         disconnectBtn.setEnabled(false);
                         disconnectBtn.setText("Disconnect");
                         client = null;
@@ -497,6 +511,7 @@ public class MainActivity extends AppCompatActivity {
                 runOnUiThread(() -> {
                     log("Transaction blocked: " + e.getMessage());
                     sendBtn.setEnabled(true);
+                    sendNoHeaderBtn.setEnabled(true);
                     disconnectBtn.setText("Disconnect");
                 });
             } catch (Exception e) {
@@ -504,12 +519,113 @@ public class MainActivity extends AppCompatActivity {
                 runOnUiThread(() -> {
                     log("Send failed: " + e.getClass().getSimpleName() + " - " + e.getMessage());
                     sendBtn.setEnabled(true);
+                    sendNoHeaderBtn.setEnabled(true);
                     disconnectBtn.setText("Disconnect");
 
                     // Reset connection state if client is not usable
                     if (client != null && !client.isConnected()) {
                         connectBtn.setEnabled(true);
                         sendBtn.setEnabled(false);
+                        sendNoHeaderBtn.setEnabled(false);
+                        disconnectBtn.setEnabled(false);
+                        client = null;
+                    }
+                });
+            } finally {
+                isOperationInProgress = false;
+            }
+        });
+    }
+
+    /**
+     * Send message without length header and read response without header (idle-gap based)
+     */
+    private void sendNoHeader() {
+        String message = messageInput.getText().toString();
+        if (message.isEmpty()) {
+            log("Error: Message is required");
+            return;
+        }
+        if (client == null || !client.isConnected()) {
+            log("Error: Not connected");
+            return;
+        }
+        if (client.isTransactionInProgress()) {
+            log("Error: Transaction already in progress. Please wait...");
+            return;
+        }
+
+        executor.execute(() -> {
+            isOperationInProgress = true;
+            try {
+                byte[] data;
+                if (hexModeCheck.isChecked()) {
+                    data = hexToBytes(message);
+                } else {
+                    data = message.getBytes(StandardCharsets.UTF_8);
+                }
+
+                runOnUiThread(() -> {
+                    log("Sending (no header) " + data.length + " bytes...");
+                    sendBtn.setEnabled(false);
+                    sendNoHeaderBtn.setEnabled(false);
+                    disconnectBtn.setText("Cancel");
+                });
+
+                // Build no-header framing (TMS-style)
+                FramingOptions noHeader = FramingOptions.builder()
+                        .sendLengthHeader(false)
+                        .expectResponseHeader(false)
+                        .idleGapMs(150)
+                        .build();
+
+                IsoResponse response = client.sendAndReceive(data, noHeader);
+
+                runOnUiThread(() -> {
+                    log("Response (no header) received in " + response.getResponseTimeMs() + "ms");
+                    log("Response size: " + response.getData().length + " bytes");
+                    if (hexModeCheck.isChecked()) {
+                        log("Response (hex): " + bytesToHex(response.getData()));
+                    } else {
+                        log("Response (text): " + new String(response.getData(), StandardCharsets.UTF_8));
+                    }
+
+                    if (client != null && client.isConnected()) {
+                        log("Connection kept open (autoCloseAfterResponse = false)");
+                        connectBtn.setEnabled(false);
+                        sendBtn.setEnabled(true);
+                        sendNoHeaderBtn.setEnabled(true);
+                        disconnectBtn.setEnabled(true);
+                        disconnectBtn.setText("Disconnect");
+                    } else {
+                        log("Connection closed after receiving response");
+                        connectBtn.setEnabled(true);
+                        sendBtn.setEnabled(false);
+                        sendNoHeaderBtn.setEnabled(false);
+                        disconnectBtn.setEnabled(false);
+                        disconnectBtn.setText("Disconnect");
+                        client = null;
+                    }
+                });
+
+            } catch (IllegalStateException e) {
+                runOnUiThread(() -> {
+                    log("Transaction blocked: " + e.getMessage());
+                    sendBtn.setEnabled(true);
+                    sendNoHeaderBtn.setEnabled(true);
+                    disconnectBtn.setText("Disconnect");
+                });
+            } catch (Exception e) {
+                e.printStackTrace();
+                runOnUiThread(() -> {
+                    log("Send (no header) failed: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+                    sendBtn.setEnabled(true);
+                    sendNoHeaderBtn.setEnabled(true);
+                    disconnectBtn.setText("Disconnect");
+                    if (client != null && !client.isConnected()) {
+                        connectBtn.setEnabled(true);
+                        sendBtn.setEnabled(false);
+                        sendNoHeaderBtn.setEnabled(false);
                         disconnectBtn.setEnabled(false);
                         client = null;
                     }
