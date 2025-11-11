@@ -28,6 +28,11 @@ public interface ConnectionEngine {
     IsoResponse sendAndReceive(byte[] message) throws IOException;
     
     /**
+     * Send message and receive response with per-call framing override.
+     */
+    IsoResponse sendAndReceive(byte[] message, FramingOptions framingOverride) throws IOException;
+    
+    /**
      * Close the connection
      */
     void close();
@@ -66,4 +71,9 @@ public interface ConnectionEngine {
      * Get comprehensive connection status
      */
     ConnectionStatus getConnectionStatus();
+    
+    /**
+     * Update framing options at runtime
+     */
+    void setFramingOptions(FramingOptions options);
 }

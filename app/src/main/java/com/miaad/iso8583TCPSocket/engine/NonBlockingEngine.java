@@ -7,6 +7,7 @@ import com.miaad.iso8583TCPSocket.ConnectionMode;
 import com.miaad.iso8583TCPSocket.IsoConfig;
 import com.miaad.iso8583TCPSocket.IsoResponse;
 import com.miaad.iso8583TCPSocket.RetryConfig;
+import com.miaad.iso8583TCPSocket.FramingOptions;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -28,10 +29,11 @@ public class NonBlockingEngine implements ConnectionEngine {
     private ConnectionStateListener stateListener;
     private SocketChannel channel;
     private Selector selector;
-    private final int lengthHeaderSize;
-    private final ByteOrder byteOrder;
+    private final int defaultLengthHeaderSize;
+    private final ByteOrder defaultByteOrder;
     private ByteBuffer headerBuffer;
     private ByteBuffer dataBuffer;
+    private volatile FramingOptions framingOptions;
     private volatile ConnectionState currentState = ConnectionState.DISCONNECTED;
     private final ReentrantLock operationLock = new ReentrantLock();
     private final AtomicBoolean transactionInProgress = new AtomicBoolean(false);
@@ -42,15 +44,25 @@ public class NonBlockingEngine implements ConnectionEngine {
     private int reconnectAttempts = 0;
 
     public NonBlockingEngine(int lengthHeaderSize, ByteOrder byteOrder) {
-        this.lengthHeaderSize = lengthHeaderSize;
-        this.byteOrder = byteOrder;
-        this.headerBuffer = ByteBuffer.allocate(lengthHeaderSize);
+        this.defaultLengthHeaderSize = lengthHeaderSize;
+        this.defaultByteOrder = byteOrder;
+        this.headerBuffer = ByteBuffer.allocate(4); // support 2 or 4
+        this.framingOptions = FramingOptions.defaults(lengthHeaderSize, byteOrder);
     }
 
     @Override
     public void initialize(IsoConfig config, ConnectionStateListener stateListener) {
         this.config = config;
         this.stateListener = stateListener;
+    }
+
+    @Override
+    public void setFramingOptions(FramingOptions options) {
+        if (options == null) {
+            this.framingOptions = FramingOptions.defaults(defaultLengthHeaderSize, defaultByteOrder);
+        } else {
+            this.framingOptions = options;
+        }
     }
 
     @Override
@@ -266,9 +278,12 @@ public class NonBlockingEngine implements ConnectionEngine {
 
     @Override
     public IsoResponse sendAndReceive(byte[] message) throws IOException {
-        if (!isConnected()) {
-            throw new IOException("Not connected");
-        }
+        return sendAndReceive(message, null);
+    }
+
+    @Override
+    public IsoResponse sendAndReceive(byte[] message, FramingOptions framingOverride) throws IOException {
+        if (!isConnected()) throw new IOException("Not connected");
 
         changeState(ConnectionState.PREPARING_SEND, "Preparing to send NIO message");
         if (stateListener != null) {
@@ -276,18 +291,27 @@ public class NonBlockingEngine implements ConnectionEngine {
         }
         
         long startTime = System.currentTimeMillis();
+        FramingOptions eff = (framingOverride != null) ? framingOverride : this.framingOptions;
         
-        // Create message with length header
+        // Create message with length header or raw
         changeState(ConnectionState.CREATING_FRAME, "Creating NIO message frame");
-        byte[] lengthHeader = createLengthHeader(message.length);
-        ByteBuffer sendBuffer = ByteBuffer.allocate(lengthHeader.length + message.length);
-        sendBuffer.put(lengthHeader);
-        sendBuffer.put(message);
-        sendBuffer.flip();
-        
-        if (stateListener != null) {
-            stateListener.onFrameCreated("Length-Prefixed NIO", lengthHeader.length, message.length);
+        ByteBuffer sendBuffer;
+        if (eff.isSendLengthHeader()) {
+            byte[] lengthHeader = createLengthHeader(message.length, eff);
+            sendBuffer = ByteBuffer.allocate(lengthHeader.length + message.length);
+            sendBuffer.put(lengthHeader);
+            sendBuffer.put(message);
+            if (stateListener != null) {
+                stateListener.onFrameCreated("Length-Prefixed NIO", lengthHeader.length, message.length);
+            }
+        } else {
+            sendBuffer = ByteBuffer.allocate(message.length);
+            sendBuffer.put(message);
+            if (stateListener != null) {
+                stateListener.onFrameCreated("Raw NIO", 0, message.length);
+            }
         }
+        sendBuffer.flip();
         
         // Send data
         changeState(ConnectionState.SENDING_DATA, "Sending NIO data");
@@ -295,6 +319,7 @@ public class NonBlockingEngine implements ConnectionEngine {
             stateListener.onDataTransmissionStarted(sendBuffer.remaining());
         }
         
+        int totalToSend = sendBuffer.remaining();
         while (sendBuffer.hasRemaining()) {
             if (cancelled.get()) {
                 throw new IOException("Send operation cancelled");
@@ -311,7 +336,7 @@ public class NonBlockingEngine implements ConnectionEngine {
         
         changeState(ConnectionState.DATA_SENT, "NIO data sent");
         if (stateListener != null) {
-            stateListener.onDataTransmissionCompleted(lengthHeader.length + message.length, 
+            stateListener.onDataTransmissionCompleted(totalToSend, 
                 System.currentTimeMillis() - startTime);
         }
         
@@ -321,65 +346,18 @@ public class NonBlockingEngine implements ConnectionEngine {
             stateListener.onResponseWaitStarted(config.getReadTimeoutMs());
         }
         
-        // Read length header
-        changeState(ConnectionState.READING_HEADER, "Reading NIO response header");
-        if (stateListener != null) {
-            stateListener.onResponseHeaderReadStarted(lengthHeaderSize);
-        }
-        
-        if (config.isReuseBuffers()) {
-            if (headerBuffer == null || headerBuffer.capacity() < lengthHeaderSize) {
-                headerBuffer = ByteBuffer.allocateDirect(lengthHeaderSize);
-            }
-            headerBuffer.clear();
-            readFullBuffer(headerBuffer, config.getReadTimeoutMs());
-        } else {
-            ByteBuffer hb = ByteBuffer.allocate(lengthHeaderSize);
-            readFullBuffer(hb, config.getReadTimeoutMs());
-            headerBuffer = hb;
-        }
-        
-        headerBuffer.flip();
-        int responseLength = parseLength(headerBuffer.array());
-        
-        changeState(ConnectionState.HEADER_RECEIVED, "NIO header received");
-        if (stateListener != null) {
-            stateListener.onResponseHeaderReceived(headerBuffer.array(), responseLength, 
-                System.currentTimeMillis() - startTime);
-        }
-        
-        // Read response data
-        changeState(ConnectionState.READING_DATA, "Reading NIO response data");
-        if (stateListener != null) {
-            stateListener.onResponseDataReadStarted(responseLength);
-        }
-        
-        if (config.isReuseBuffers()) {
-            int need = responseLength;
-            if (config.getMaxMessageSizeBytes() > 0) {
-                need = Math.min(responseLength, config.getMaxMessageSizeBytes());
-            }
-            if (dataBuffer == null || dataBuffer.capacity() < need) {
-                dataBuffer = ByteBuffer.allocateDirect(need);
-            }
-            dataBuffer.clear();
-            dataBuffer.limit(responseLength);
-            readFullBuffer(dataBuffer, config.getReadTimeoutMs());
-        } else {
-            dataBuffer = ByteBuffer.allocate(responseLength);
-            readFullBuffer(dataBuffer, config.getReadTimeoutMs());
-        }
+        byte[] responseData = readResponseNio(eff, startTime);
         
         changeState(ConnectionState.DATA_RECEIVED, "NIO data received");
         if (stateListener != null) {
-            stateListener.onResponseDataReceived(dataBuffer.array(), responseLength,
+            stateListener.onResponseDataReceived(responseData, responseData.length,
                 System.currentTimeMillis() - startTime);
         }
         
         // Process response
         changeState(ConnectionState.PROCESSING_RESPONSE, "Processing NIO response");
         if (stateListener != null) {
-            stateListener.onResponseProcessingStarted(responseLength);
+            stateListener.onResponseProcessingStarted(responseData.length);
         }
         
         long responseTime = System.currentTimeMillis() - startTime;
@@ -394,7 +372,7 @@ public class NonBlockingEngine implements ConnectionEngine {
             close();
         }
         
-        return new IsoResponse(dataBuffer.array(), responseTime);
+        return new IsoResponse(responseData, responseTime);
     }
 
     @Override
@@ -605,11 +583,11 @@ public class NonBlockingEngine implements ConnectionEngine {
         }
     }
 
-    private byte[] createLengthHeader(int length) {
-        ByteBuffer buffer = ByteBuffer.allocate(lengthHeaderSize);
-        buffer.order(byteOrder);
+    private byte[] createLengthHeader(int length, FramingOptions eff) {
+        ByteBuffer buffer = ByteBuffer.allocate(eff.getLengthHeaderSize());
+        buffer.order(eff.getByteOrder());
         
-        if (lengthHeaderSize == 2) {
+        if (eff.getLengthHeaderSize() == 2) {
             buffer.putShort((short) (length & 0xFFFF));
         } else {
             buffer.putInt(length);
@@ -618,14 +596,130 @@ public class NonBlockingEngine implements ConnectionEngine {
         return buffer.array();
     }
 
-    private int parseLength(byte[] header) {
+    private int parseLength(byte[] header, FramingOptions eff) {
         ByteBuffer buffer = ByteBuffer.wrap(header);
-        buffer.order(byteOrder);
+        buffer.order(eff.getByteOrder());
         
-        if (lengthHeaderSize == 2) {
+        if (eff.getLengthHeaderSize() == 2) {
             return buffer.getShort() & 0xFFFF;
         } else {
             return buffer.getInt();
         }
+    }
+
+    private byte[] readResponseNio(FramingOptions eff, long startTime) throws IOException {
+        if (eff.isExpectResponseHeader()) {
+            changeState(ConnectionState.READING_HEADER, "Reading NIO response header");
+            if (stateListener != null) {
+                stateListener.onResponseHeaderReadStarted(eff.getLengthHeaderSize());
+            }
+            ByteBuffer hb = ByteBuffer.allocate(eff.getLengthHeaderSize());
+            readFullBuffer(hb, config.getReadTimeoutMs());
+            hb.flip();
+            byte[] header = new byte[eff.getLengthHeaderSize()];
+            hb.get(header);
+            int responseLength = parseLength(header, eff);
+            changeState(ConnectionState.HEADER_RECEIVED, "NIO header received");
+            if (stateListener != null) {
+                stateListener.onResponseHeaderReceived(header, responseLength, 
+                    System.currentTimeMillis() - startTime);
+            }
+            ByteBuffer db = ByteBuffer.allocate(responseLength);
+            readFullBuffer(db, config.getReadTimeoutMs());
+            byte[] data = new byte[responseLength];
+            db.flip();
+            db.get(data);
+            return data;
+        } else {
+            // no header: fixed, delimiter or idle
+            if (eff.getFixedResponseLength() > 0) {
+                ByteBuffer db = ByteBuffer.allocate(eff.getFixedResponseLength());
+                readFullBuffer(db, config.getReadTimeoutMs());
+                byte[] data = new byte[eff.getFixedResponseLength()];
+                db.flip();
+                db.get(data);
+                return data;
+            }
+            if (eff.getResponseTerminator() != null && eff.getResponseTerminator().length > 0) {
+                return readUntilTerminatorNio(eff.getResponseTerminator(), eff.getMaxMessageSizeBytes(), eff.getIdleGapMs());
+            }
+            return readUntilIdleNio(eff.getIdleGapMs(), eff.getMaxMessageSizeBytes());
+        }
+    }
+
+    private byte[] readUntilTerminatorNio(byte[] terminator, int maxSize, int idleGapMs) throws IOException {
+        ByteBuffer temp = ByteBuffer.allocate(4096);
+        byte[] carry = new byte[0];
+        long lastRead = System.currentTimeMillis();
+        while (true) {
+            int read = channel.read(temp);
+            if (read > 0) {
+                lastRead = System.currentTimeMillis();
+                temp.flip();
+                byte[] chunk = new byte[temp.remaining()];
+                temp.get(chunk);
+                temp.clear();
+                // append
+                byte[] combined = new byte[carry.length + chunk.length];
+                System.arraycopy(carry, 0, combined, 0, carry.length);
+                System.arraycopy(chunk, 0, combined, carry.length, chunk.length);
+                carry = combined;
+                if (maxSize > 0 && carry.length >= maxSize) break;
+                if (endsWith(carry, terminator)) break;
+            } else if (read == 0) {
+                // wait for readability or idle timeout
+                SelectionKey key = channel.register(selector, SelectionKey.OP_READ);
+                int ready = selector.select(idleGapMs);
+                key.cancel();
+                if (ready == 0 && (System.currentTimeMillis() - lastRead) >= idleGapMs) {
+                    // idle gap reached
+                    break;
+                }
+            } else {
+                // end
+                break;
+            }
+        }
+        return carry;
+    }
+
+    private byte[] readUntilIdleNio(int idleGapMs, int maxSize) throws IOException {
+        ByteBuffer temp = ByteBuffer.allocate(4096);
+        byte[] carry = new byte[0];
+        long lastRead = System.currentTimeMillis();
+        while (true) {
+            int read = channel.read(temp);
+            if (read > 0) {
+                lastRead = System.currentTimeMillis();
+                temp.flip();
+                byte[] chunk = new byte[temp.remaining()];
+                temp.get(chunk);
+                temp.clear();
+                byte[] combined = new byte[carry.length + chunk.length];
+                System.arraycopy(carry, 0, combined, 0, carry.length);
+                System.arraycopy(chunk, 0, combined, carry.length, chunk.length);
+                carry = combined;
+                if (maxSize > 0 && carry.length >= maxSize) break;
+            } else if (read == 0) {
+                SelectionKey key = channel.register(selector, SelectionKey.OP_READ);
+                int ready = selector.select(idleGapMs);
+                key.cancel();
+                if (ready == 0 && (System.currentTimeMillis() - lastRead) >= idleGapMs) {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        return carry;
+    }
+
+    private boolean endsWith(byte[] data, byte[] suffix) {
+        if (suffix.length == 0) return false;
+        if (data.length < suffix.length) return false;
+        for (int i = 0; i < suffix.length; i++) {
+            if (data[data.length - suffix.length + i] != suffix[i]) return false;
+        }
+        return true;
     }
 }

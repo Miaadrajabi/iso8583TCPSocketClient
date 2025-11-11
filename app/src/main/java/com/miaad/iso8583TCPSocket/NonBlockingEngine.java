@@ -345,6 +345,12 @@ public class NonBlockingEngine implements ConnectionEngine {
     }
 
     @Override
+    public IsoResponse sendAndReceive(byte[] message, FramingOptions framingOverride) throws IOException {
+        // Legacy top-level NIO engine does not support per-call framing; delegate to default behavior.
+        return sendAndReceive(message);
+    }
+
+    @Override
     public void close() {
         if (currentState == ConnectionState.DISCONNECTED) {
             return; // Already disconnected
@@ -391,6 +397,11 @@ public class NonBlockingEngine implements ConnectionEngine {
     @Override
     public void setCancelled(AtomicBoolean cancelled) {
         this.cancelled = cancelled;
+    }
+
+    @Override
+    public void setFramingOptions(FramingOptions options) {
+        // Legacy top-level NIO engine does not support runtime framing options; no-op.
     }
 
     @Override

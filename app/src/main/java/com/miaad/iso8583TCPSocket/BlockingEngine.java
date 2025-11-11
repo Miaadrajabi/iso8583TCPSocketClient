@@ -335,6 +335,12 @@ public class BlockingEngine implements ConnectionEngine {
     }
 
     @Override
+    public IsoResponse sendAndReceive(byte[] message, FramingOptions framingOverride) throws IOException {
+        // Legacy engine does not support per-call options; fallback to default behavior.
+        return sendAndReceive(message);
+    }
+
+    @Override
     public void close() {
         if (currentState == ConnectionState.DISCONNECTED) {
             return; // Already disconnected
@@ -400,6 +406,11 @@ public class BlockingEngine implements ConnectionEngine {
     @Override
     public void setCancelled(AtomicBoolean cancelled) {
         this.cancelled = cancelled;
+    }
+
+    @Override
+    public void setFramingOptions(FramingOptions options) {
+        // Legacy engine does not support framing options; no-op to preserve behavior.
     }
 
     @Override

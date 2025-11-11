@@ -17,6 +17,7 @@ public class IsoClient {
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
     private RetryCallback retryCallback;
     private ConnectionStateListener stateListener;
+    private FramingOptions framingOptions;
     
     /**
      * Create ISO-8583 client with 2-byte length header (default)
@@ -32,7 +33,7 @@ public class IsoClient {
         if (lengthHeaderSize != 2 && lengthHeaderSize != 4) {
             throw new IllegalArgumentException("Length header size must be 2 or 4 bytes.");
         }
-        
+        this.framingOptions = FramingOptions.defaults(lengthHeaderSize, byteOrder);
         // Create appropriate engine based on connection mode
         switch (config.getConnectionMode()) {
             case BLOCKING:
@@ -47,7 +48,20 @@ public class IsoClient {
         
         // Initialize engine
         this.engine.initialize(config, null); // StateListener will be set later
+        this.engine.setFramingOptions(this.framingOptions);
         this.engine.setCancelled(cancelled);
+    }
+
+    /**
+     * Create ISO-8583 client with explicit framing options.
+     * Defaults are preserved unless overridden in options.
+     */
+    public IsoClient(IsoConfig config, FramingOptions options) {
+        this(config, options != null ? options.getLengthHeaderSize() : 2,
+                options != null ? options.getByteOrder() : ByteOrder.BIG_ENDIAN);
+        if (options != null) {
+            updateFraming(options);
+        }
     }
 
     /**
@@ -62,6 +76,13 @@ public class IsoClient {
      */
     public IsoResponse sendAndReceive(byte[] message) throws IOException {
         return engine.sendAndReceive(message);
+    }
+
+    /**
+     * Send ISO message with per-call framing override
+     */
+    public IsoResponse sendAndReceive(byte[] message, FramingOptions override) throws IOException {
+        return engine.sendAndReceive(message, override);
     }
 
     /**
@@ -108,9 +129,19 @@ public class IsoClient {
         // Re-initialize engine with the new listener
         if (engine instanceof BlockingEngine) {
             ((BlockingEngine) engine).initialize(((BlockingEngine) engine).config, listener);
+            ((BlockingEngine) engine).setFramingOptions(this.framingOptions);
         } else if (engine instanceof NonBlockingEngine) {
             ((NonBlockingEngine) engine).initialize(((NonBlockingEngine) engine).config, listener);
+            ((NonBlockingEngine) engine).setFramingOptions(this.framingOptions);
         }
+    }
+
+    /**
+     * Update framing options at runtime (for singleton client usage)
+     */
+    public void updateFraming(FramingOptions options) {
+        this.framingOptions = options != null ? options : FramingOptions.defaults(2, ByteOrder.BIG_ENDIAN);
+        engine.setFramingOptions(this.framingOptions);
     }
 
     /**

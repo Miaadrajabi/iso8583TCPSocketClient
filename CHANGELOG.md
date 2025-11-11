@@ -2,6 +2,20 @@
 
 All notable changes to the iso8583TCPSocket library will be documented in this file.
 
+## [1.2.0] - 2025-11-11
+
+### ✨ Added
+- FramingOptions for advanced framing control:
+  - Optional send length header (2/4 bytes) and optional expect response header
+  - Auto-detect fallback if header is missing/invalid on receive
+  - Headerless receive modes: fixed length, delimiter-terminated, idle-gap based
+  - Per-call override via `IsoClient.sendAndReceive(bytes, FramingOptions)` and runtime update via `IsoClient.updateFraming(...)`
+- BlockingEngine and NonBlockingEngine updated to support new framing behaviors
+- Advanced documentation added to README: “Advanced Socket Connection & Framing (New)”
+
+### 🛡️ Compatibility
+- Default behavior remains unchanged (2-byte BIG_ENDIAN length header for send/receive)
+
 ## [1.0.0] - 2025-08-28
 
 ### 🎉 Initial Release

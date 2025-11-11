@@ -7,6 +7,7 @@ import com.miaad.iso8583TCPSocket.ConnectionMode;
 import com.miaad.iso8583TCPSocket.IsoConfig;
 import com.miaad.iso8583TCPSocket.IsoResponse;
 import com.miaad.iso8583TCPSocket.RetryConfig;
+import com.miaad.iso8583TCPSocket.FramingOptions;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -15,6 +16,8 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.net.SocketTimeoutException;
+import java.io.ByteArrayOutputStream;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -29,10 +32,11 @@ public class BlockingEngine implements ConnectionEngine {
     public IsoConfig config;
     private ConnectionStateListener stateListener;
     private Socket socket;
-    private final int lengthHeaderSize;
-    private final ByteOrder byteOrder;
+    private final int defaultLengthHeaderSize;
+    private final ByteOrder defaultByteOrder;
     private final byte[] lengthHeaderBuffer;
     private final byte[] headerReadBuffer;
+    private volatile FramingOptions framingOptions;
     private volatile ConnectionState currentState = ConnectionState.DISCONNECTED;
     private final ReentrantLock operationLock = new ReentrantLock();
     private final AtomicBoolean transactionInProgress = new AtomicBoolean(false);
@@ -43,16 +47,26 @@ public class BlockingEngine implements ConnectionEngine {
     private int reconnectAttempts = 0;
 
     public BlockingEngine(int lengthHeaderSize, ByteOrder byteOrder) {
-        this.lengthHeaderSize = lengthHeaderSize;
-        this.byteOrder = byteOrder;
-        this.lengthHeaderBuffer = new byte[lengthHeaderSize];
-        this.headerReadBuffer = new byte[lengthHeaderSize];
+        this.defaultLengthHeaderSize = lengthHeaderSize;
+        this.defaultByteOrder = byteOrder;
+        this.lengthHeaderBuffer = new byte[4]; // support 2 or 4
+        this.headerReadBuffer = new byte[4];   // support 2 or 4
+        this.framingOptions = FramingOptions.defaults(lengthHeaderSize, byteOrder);
     }
 
     @Override
     public void initialize(IsoConfig config, ConnectionStateListener stateListener) {
         this.config = config;
         this.stateListener = stateListener;
+    }
+
+    @Override
+    public void setFramingOptions(FramingOptions options) {
+        if (options == null) {
+            this.framingOptions = FramingOptions.defaults(defaultLengthHeaderSize, defaultByteOrder);
+        } else {
+            this.framingOptions = options;
+        }
     }
 
     @Override
@@ -240,36 +254,51 @@ public class BlockingEngine implements ConnectionEngine {
 
     @Override
     public IsoResponse sendAndReceive(byte[] message) throws IOException {
-        // Note: For blocking engine, we'll implement a simplified version here
-        // Full implementation would include all the retry logic from the original
-        
+        return sendAndReceive(message, null);
+    }
+
+    @Override
+    public IsoResponse sendAndReceive(byte[] message, FramingOptions framingOverride) throws IOException {
         changeState(ConnectionState.PREPARING_SEND, "Preparing to send message");
         if (stateListener != null) {
             stateListener.onSendStarted(message.length, "ISO-8583");
         }
         
         long startTime = System.currentTimeMillis();
-        
+
+        FramingOptions eff = (framingOverride != null) ? framingOverride : this.framingOptions;
+
         // Send message
         changeState(ConnectionState.CREATING_FRAME, "Creating message frame");
-        byte[] lengthHeader = createLengthHeader(message.length);
-        if (stateListener != null) {
-            stateListener.onFrameCreated("Length-Prefixed", lengthHeader.length, message.length);
+        byte[] lengthHeader = null;
+        if (eff.isSendLengthHeader()) {
+            lengthHeader = createLengthHeader(message.length, eff);
+            if (stateListener != null) {
+                stateListener.onFrameCreated("Length-Prefixed", eff.getLengthHeaderSize(), message.length);
+            }
+        } else {
+            if (stateListener != null) {
+                stateListener.onFrameCreated("Raw", 0, message.length);
+            }
         }
         
         changeState(ConnectionState.SENDING_DATA, "Sending data");
         if (stateListener != null) {
-            stateListener.onDataTransmissionStarted(lengthHeader.length + message.length);
+            int total = (lengthHeader != null ? lengthHeader.length : 0) + message.length;
+            stateListener.onDataTransmissionStarted(total);
         }
         
         OutputStream out = socket.getOutputStream();
-        out.write(lengthHeader);
+        if (lengthHeader != null) {
+            out.write(lengthHeader, 0, eff.getLengthHeaderSize());
+        }
         out.write(message);
         out.flush();
         
         changeState(ConnectionState.DATA_SENT, "Data sent");
         if (stateListener != null) {
-            stateListener.onDataTransmissionCompleted(lengthHeader.length + message.length, 
+            int total = (lengthHeader != null ? eff.getLengthHeaderSize() : 0) + message.length;
+            stateListener.onDataTransmissionCompleted(total, 
                 System.currentTimeMillis() - startTime);
         }
         
@@ -279,51 +308,19 @@ public class BlockingEngine implements ConnectionEngine {
             stateListener.onResponseWaitStarted(config.getReadTimeoutMs());
         }
         
-        // Read response header
-        changeState(ConnectionState.READING_HEADER, "Reading response header");
-        if (stateListener != null) {
-            stateListener.onResponseHeaderReadStarted(lengthHeaderSize);
-        }
-        
         InputStream in = socket.getInputStream();
-        int headerRead = 0;
-        while (headerRead < lengthHeaderSize) {
-            int n = in.read(headerReadBuffer, headerRead, lengthHeaderSize - headerRead);
-            if (n < 0) throw new IOException("Connection closed while reading header");
-            headerRead += n;
-        }
-        
-        int responseLength = parseLength(headerReadBuffer);
-        changeState(ConnectionState.HEADER_RECEIVED, "Header received");
-        if (stateListener != null) {
-            stateListener.onResponseHeaderReceived(headerReadBuffer, responseLength, 
-                System.currentTimeMillis() - startTime);
-        }
-        
-        // Read response data
-        changeState(ConnectionState.READING_DATA, "Reading response data");
-        if (stateListener != null) {
-            stateListener.onResponseDataReadStarted(responseLength);
-        }
-        
-        byte[] responseData = new byte[responseLength];
-        int dataRead = 0;
-        while (dataRead < responseLength) {
-            int n = in.read(responseData, dataRead, responseLength - dataRead);
-            if (n < 0) throw new IOException("Connection closed while reading data");
-            dataRead += n;
-        }
+        byte[] responseData = readResponse(in, eff, startTime);
         
         changeState(ConnectionState.DATA_RECEIVED, "Data received");
         if (stateListener != null) {
-            stateListener.onResponseDataReceived(responseData, responseLength,
+            stateListener.onResponseDataReceived(responseData, responseData.length,
                 System.currentTimeMillis() - startTime);
         }
         
         // Process response
         changeState(ConnectionState.PROCESSING_RESPONSE, "Processing response");
         if (stateListener != null) {
-            stateListener.onResponseProcessingStarted(responseLength);
+            stateListener.onResponseProcessingStarted(responseData.length);
         }
         
         long responseTime = System.currentTimeMillis() - startTime;
@@ -339,6 +336,146 @@ public class BlockingEngine implements ConnectionEngine {
         }
         
         return new IsoResponse(responseData, responseTime);
+    }
+
+    private byte[] readResponse(InputStream in, FramingOptions eff, long startTime) throws IOException {
+        if (eff.isExpectResponseHeader()) {
+            // Try read header first
+            changeState(ConnectionState.READING_HEADER, "Reading response header");
+            if (stateListener != null) {
+                stateListener.onResponseHeaderReadStarted(eff.getLengthHeaderSize());
+            }
+            int needed = eff.getLengthHeaderSize();
+            int headerRead = 0;
+            while (headerRead < needed) {
+                int n = in.read(headerReadBuffer, headerRead, needed - headerRead);
+                if (n < 0) {
+                    if (eff.isAutoDetect()) {
+                        // fallback to raw receive
+                        return readWithoutHeader(in, eff, startTime);
+                    }
+                    throw new IOException("Connection closed while reading header");
+                }
+                headerRead += n;
+            }
+            int responseLength = parseLength(headerReadBuffer, eff);
+            changeState(ConnectionState.HEADER_RECEIVED, "Header received");
+            if (stateListener != null) {
+                byte[] hdr = new byte[needed];
+                System.arraycopy(headerReadBuffer, 0, hdr, 0, needed);
+                stateListener.onResponseHeaderReceived(hdr, responseLength, 
+                    System.currentTimeMillis() - startTime);
+            }
+            // Read fixed amount
+            changeState(ConnectionState.READING_DATA, "Reading response data");
+            if (stateListener != null) {
+                stateListener.onResponseDataReadStarted(responseLength);
+            }
+            return readFixedBytes(in, responseLength);
+        } else {
+            return readWithoutHeader(in, eff, startTime);
+        }
+    }
+
+    private byte[] readWithoutHeader(InputStream in, FramingOptions eff, long startTime) throws IOException {
+        // Fixed length
+        if (eff.getFixedResponseLength() > 0) {
+            changeState(ConnectionState.READING_DATA, "Reading fixed-length response");
+            if (stateListener != null) {
+                stateListener.onResponseDataReadStarted(eff.getFixedResponseLength());
+            }
+            return readFixedBytes(in, eff.getFixedResponseLength());
+        }
+        // Delimiter-terminated
+        if (eff.getResponseTerminator() != null && eff.getResponseTerminator().length > 0) {
+            changeState(ConnectionState.READING_DATA, "Reading response until terminator");
+            return readUntilTerminator(in, eff.getResponseTerminator(), eff.getMaxMessageSizeBytes());
+        }
+        // Raw-until-idle
+        changeState(ConnectionState.READING_DATA, "Reading response until idle");
+        return readUntilIdle(in, eff.getIdleGapMs(), eff.getMaxMessageSizeBytes());
+    }
+
+    private byte[] readFixedBytes(InputStream in, int length) throws IOException {
+        byte[] data = new byte[length];
+        int read = 0;
+        while (read < length) {
+            int n = in.read(data, read, length - read);
+            if (n < 0) {
+                break;
+            }
+            read += n;
+        }
+        if (read < length) {
+            byte[] partial = new byte[read];
+            System.arraycopy(data, 0, partial, 0, read);
+            return partial;
+        }
+        return data;
+    }
+
+    private byte[] readUntilTerminator(InputStream in, byte[] terminator, int maxSize) throws IOException {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        byte[] buf = new byte[1024];
+        while (true) {
+            int n = in.read(buf);
+            if (n < 0) {
+                break;
+            }
+            baos.write(buf, 0, n);
+            if (maxSize > 0 && baos.size() >= maxSize) {
+                break;
+            }
+            if (endsWith(baos.toByteArray(), terminator)) {
+                break;
+            }
+        }
+        return baos.toByteArray();
+    }
+
+    private boolean endsWith(byte[] data, byte[] suffix) {
+        if (suffix.length == 0) return false;
+        if (data.length < suffix.length) return false;
+        for (int i = 0; i < suffix.length; i++) {
+            if (data[data.length - suffix.length + i] != suffix[i]) return false;
+        }
+        return true;
+    }
+
+    private byte[] readUntilIdle(InputStream in, int idleGapMs, int maxSize) throws IOException {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        int originalTimeout = 0;
+        boolean timeoutChanged = false;
+        try {
+            if (socket != null) {
+                originalTimeout = socket.getSoTimeout();
+                socket.setSoTimeout(Math.max(1, idleGapMs));
+                timeoutChanged = true;
+            }
+        } catch (Exception ignored) {
+        }
+        byte[] buf = new byte[2048];
+        while (true) {
+            try {
+                int n = in.read(buf);
+                if (n < 0) {
+                    break;
+                }
+                if (n > 0) {
+                    baos.write(buf, 0, n);
+                    if (maxSize > 0 && baos.size() >= maxSize) {
+                        break;
+                    }
+                }
+            } catch (SocketTimeoutException e) {
+                // idle gap reached
+                break;
+            }
+        }
+        if (timeoutChanged) {
+            try { socket.setSoTimeout(originalTimeout); } catch (Exception ignored) {}
+        }
+        return baos.toByteArray();
     }
 
     @Override
@@ -508,23 +645,24 @@ public class BlockingEngine implements ConnectionEngine {
         }
     }
 
-    private byte[] createLengthHeader(int length) {
+    private byte[] createLengthHeader(int length, FramingOptions eff) {
         ByteBuffer buffer = ByteBuffer.wrap(lengthHeaderBuffer);
-        buffer.order(byteOrder);
+        buffer.order(eff.getByteOrder());
         buffer.clear();
-        if (lengthHeaderSize == 2) {
+        if (eff.getLengthHeaderSize() == 2) {
             buffer.putShort((short) (length & 0xFFFF));
         } else {
             buffer.putInt(length);
         }
-        return lengthHeaderBuffer;
+        byte[] out = new byte[eff.getLengthHeaderSize()];
+        System.arraycopy(lengthHeaderBuffer, 0, out, 0, eff.getLengthHeaderSize());
+        return out;
     }
 
-    private int parseLength(byte[] header) {
+    private int parseLength(byte[] header, FramingOptions eff) {
         ByteBuffer buffer = ByteBuffer.wrap(header);
-        buffer.order(byteOrder);
-        
-        if (lengthHeaderSize == 2) {
+        buffer.order(eff.getByteOrder());
+        if (eff.getLengthHeaderSize() == 2) {
             return buffer.getShort() & 0xFFFF;
         } else {
             return buffer.getInt();

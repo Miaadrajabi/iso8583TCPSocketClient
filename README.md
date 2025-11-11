@@ -36,7 +36,7 @@ Then add the dependency to your app's `build.gradle`:
 
 ```gradle
 dependencies {
-    implementation 'com.github.Miaadrajabi:iso8583TCPSocketClient:1.1.0'
+    implementation 'com.github.Miaadrajabi:iso8583TCPSocketClient:1.2.0'
 }
 ```
 
@@ -46,7 +46,7 @@ dependencies {
 <dependency>
     <groupId>com.github.Miaadrajabi</groupId>
     <artifactId>iso8583TCPSocketClient</artifactId>
-    <version>1.1.0</version>
+    <version>1.2.0</version>
 </dependency>
 ```
 
@@ -253,6 +253,157 @@ IsoClient client = new IsoClient(config, 2, ByteOrder.BIG_ENDIAN);
 // 4-byte length header
 IsoClient client = new IsoClient(config, 4, ByteOrder.LITTLE_ENDIAN);
 ```
+
+## 🧠 Advanced Socket Connection & Framing (New)
+
+This section documents advanced message framing options and modes. By default, nothing changes: the client behaves exactly like before (length-prefixed with a 2-byte BIG_ENDIAN header). You can opt-in to other modes using FramingOptions.
+
+### FramingOptions Overview
+
+- sendLengthHeader (default: true): If true, a length header (2 or 4 bytes) is prepended on send.
+- expectResponseHeader (default: true): If true, the response is read using a length header.
+- lengthHeaderSize (default: 2): 2 or 4 bytes.
+- byteOrder (default: BIG_ENDIAN): Byte order for the length header.
+- autoDetect (default: false): If true and reading a response header fails or is invalid, it falls back to headerless reading.
+- fixedResponseLength: If response size is known/fixed, read exactly that many bytes.
+- responseTerminator: Read until this terminator sequence (e.g., '\n' or CRLF).
+- idleGapMs (default: 150): For headerless mode, read until no bytes arrive for idleGapMs.
+- maxMessageSizeBytes: Optional safety cap while reading headerless modes.
+
+All defaults preserve current behavior. Nothing changes unless you pass these options.
+
+### How to Provide FramingOptions
+
+1) At construction (sets defaults):
+```java
+FramingOptions framing = FramingOptions.builder()
+    .sendLengthHeader(true)
+    .expectResponseHeader(true)
+    .lengthHeaderSize(2)
+    .byteOrder(ByteOrder.BIG_ENDIAN)
+    .build();
+
+IsoClient client = new IsoClient(config, framing);
+```
+
+2) At runtime for a singleton client (switch behavior globally):
+```java
+FramingOptions noHeader = FramingOptions.builder()
+    .sendLengthHeader(false)
+    .expectResponseHeader(false)
+    .idleGapMs(150)
+    .build();
+
+client.updateFraming(noHeader);
+```
+
+3) Per-call override (only for this send/receive):
+```java
+FramingOptions perCall = FramingOptions.builder()
+    .sendLengthHeader(false)
+    .expectResponseHeader(false)
+    .idleGapMs(150)
+    .build();
+
+IsoResponse resp = client.sendAndReceive(payloadBytes, perCall);
+```
+
+Note: If you do nothing, the existing constructor behaves exactly like before:
+```java
+IsoClient client = new IsoClient(config, 2, ByteOrder.BIG_ENDIAN); // default behavior
+```
+
+### Common Scenarios
+
+1) Default ISO-8583 (unchanged)
+```java
+IsoClient client = new IsoClient(config, 2, ByteOrder.BIG_ENDIAN);
+client.connect();
+IsoResponse resp = client.sendAndReceive(message); // length-prefixed 2 bytes, BIG_ENDIAN
+```
+
+2) TMS-like servers that do not accept a length header
+Send and receive without any length header. Because responses are 1-to-1, use idle gap:
+```java
+FramingOptions tms = FramingOptions.builder()
+    .sendLengthHeader(false)       // send raw
+    .expectResponseHeader(false)   // read raw
+    .idleGapMs(150)                // stop when line is idle
+    .build();
+
+IsoResponse resp = client.sendAndReceive(tmsMessage, tms);
+```
+
+3) Auto-detect (try header first, fallback to headerless)
+If you expect length headers but a server sometimes replies without it:
+```java
+FramingOptions auto = FramingOptions.builder()
+    .sendLengthHeader(true)
+    .expectResponseHeader(true)
+    .autoDetect(true)              // fallback if header missing/invalid
+    .idleGapMs(150)
+    .build();
+
+client.updateFraming(auto);
+```
+
+4) Fixed-length responses
+```java
+FramingOptions fixed = FramingOptions.builder()
+    .sendLengthHeader(false)
+    .expectResponseHeader(false)
+    .fixedResponseLength(512)      // read exactly 512 bytes
+    .build();
+
+IsoResponse resp = client.sendAndReceive(msg, fixed);
+```
+
+5) Delimiter-terminated (line-based protocols)
+```java
+FramingOptions line = FramingOptions.builder()
+    .sendLengthHeader(false)
+    .expectResponseHeader(false)
+    .responseTerminator(new byte[]{'\n'})  // or CRLF
+    .build();
+```
+
+6) 4-byte header, LITTLE_ENDIAN
+```java
+FramingOptions fourLE = FramingOptions.builder()
+    .sendLengthHeader(true)
+    .expectResponseHeader(true)
+    .lengthHeaderSize(4)
+    .byteOrder(ByteOrder.LITTLE_ENDIAN)
+    .build();
+
+client.updateFraming(fourLE);
+```
+
+### Per-Message Policy (e.g., choose by MTI)
+If you need different framing per message type (e.g., 0200 with header, TMS without), decide framing at call site:
+```java
+FramingOptions withHeader = FramingOptions.builder()
+    .sendLengthHeader(true).expectResponseHeader(true).build();
+FramingOptions noHeader = FramingOptions.builder()
+    .sendLengthHeader(false).expectResponseHeader(false).idleGapMs(150).build();
+
+byte[] mti = extractMti(isoMessage); // your own MTI extractor
+FramingOptions chosen = ("0200".equals(mti) ? withHeader : noHeader);
+IsoResponse resp = client.sendAndReceive(isoMessage, chosen);
+```
+
+### Notes and Best Practices
+
+- Backward Compatibility: If you do not use FramingOptions, behavior remains identical to previous versions.
+- Header Sizes: 2 or 4 bytes only, per standard practice.
+- Auto-Detect: Helpful when some servers omit the header; avoids closing the connection on missing header.
+- Headerless Modes:
+  - idleGapMs relies on 1:1 request/response and a brief quiet period; tune it to your network.
+  - If you know a delimiter or fixed length, prefer them over idle gap for deterministic framing.
+- Engines:
+  - BlockingEngine and NonBlockingEngine both support these modes.
+  - TLS: Blocking engine supports TLS; NIO TLS would require SSLEngine (not yet implemented).
+
 
 ### Performance Options
 

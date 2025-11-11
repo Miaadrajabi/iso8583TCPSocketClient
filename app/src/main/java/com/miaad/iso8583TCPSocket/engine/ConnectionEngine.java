@@ -5,6 +5,7 @@ import com.miaad.iso8583TCPSocket.ConnectionStateListener;
 import com.miaad.iso8583TCPSocket.ConnectionStatus;
 import com.miaad.iso8583TCPSocket.IsoConfig;
 import com.miaad.iso8583TCPSocket.IsoResponse;
+import com.miaad.iso8583TCPSocket.FramingOptions;
 
 import java.io.IOException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -32,6 +33,11 @@ public interface ConnectionEngine {
      * @throws IOException if send/receive fails
      */
     IsoResponse sendAndReceive(byte[] message) throws IOException;
+    
+    /**
+     * Send message and receive response with per-call framing override.
+     */
+    IsoResponse sendAndReceive(byte[] message, FramingOptions framingOverride) throws IOException;
     
     /**
      * Close the connection
@@ -72,4 +78,9 @@ public interface ConnectionEngine {
      * Get comprehensive connection status
      */
     ConnectionStatus getConnectionStatus();
+    
+    /**
+     * Update framing options at runtime
+     */
+    void setFramingOptions(FramingOptions options);
 }
