@@ -101,3 +101,10 @@ Desktop.ini
 # Temporary files
 *.tmp
 *.temp
+
+# Local build cache and logs
+.gradle-cache/
+build_log.txt
+
+# IDE
+.idea/
