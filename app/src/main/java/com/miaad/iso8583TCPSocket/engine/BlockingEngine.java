@@ -358,7 +358,13 @@ public class BlockingEngine implements ConnectionEngine {
                 }
                 headerRead += n;
             }
-            int responseLength = parseLength(headerReadBuffer, eff);
+            int headerValue = parseLength(headerReadBuffer, eff);
+            int responseLength = eff.isLengthIncludesHeader()
+                ? (headerValue - eff.getLengthHeaderSize())
+                : headerValue;
+            if (responseLength < 0) {
+                throw new IOException("Invalid response length parsed from header");
+            }
             changeState(ConnectionState.HEADER_RECEIVED, "Header received");
             if (stateListener != null) {
                 byte[] hdr = new byte[needed];
@@ -649,10 +655,11 @@ public class BlockingEngine implements ConnectionEngine {
         ByteBuffer buffer = ByteBuffer.wrap(lengthHeaderBuffer);
         buffer.order(eff.getByteOrder());
         buffer.clear();
+        int value = length + (eff.isLengthIncludesHeader() ? eff.getLengthHeaderSize() : 0);
         if (eff.getLengthHeaderSize() == 2) {
-            buffer.putShort((short) (length & 0xFFFF));
+            buffer.putShort((short) (value & 0xFFFF));
         } else {
-            buffer.putInt(length);
+            buffer.putInt(value);
         }
         byte[] out = new byte[eff.getLengthHeaderSize()];
         System.arraycopy(lengthHeaderBuffer, 0, out, 0, eff.getLengthHeaderSize());

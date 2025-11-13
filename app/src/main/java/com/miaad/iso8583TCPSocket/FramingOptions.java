@@ -12,6 +12,11 @@ public class FramingOptions {
     private final int lengthHeaderSize;
     private final ByteOrder byteOrder;
     private final boolean autoDetect;
+    /**
+     * If true, the numeric value stored in the length header includes the header size itself
+     * in addition to the payload length. Default is false (value equals payload length only).
+     */
+    private final boolean lengthIncludesHeader;
     private final int fixedResponseLength;
     private final byte[] responseTerminator;
     private final int idleGapMs;
@@ -23,6 +28,7 @@ public class FramingOptions {
         this.lengthHeaderSize = builder.lengthHeaderSize;
         this.byteOrder = builder.byteOrder;
         this.autoDetect = builder.autoDetect;
+        this.lengthIncludesHeader = builder.lengthIncludesHeader;
         this.fixedResponseLength = builder.fixedResponseLength;
         this.responseTerminator = builder.responseTerminator;
         this.idleGapMs = builder.idleGapMs;
@@ -36,6 +42,7 @@ public class FramingOptions {
                 .lengthHeaderSize(lengthHeaderSize)
                 .byteOrder(order == null ? ByteOrder.BIG_ENDIAN : order)
                 .autoDetect(false)
+                .lengthIncludesHeader(false)
                 .idleGapMs(150)
                 .build();
     }
@@ -45,6 +52,7 @@ public class FramingOptions {
     public int getLengthHeaderSize() { return lengthHeaderSize; }
     public ByteOrder getByteOrder() { return byteOrder; }
     public boolean isAutoDetect() { return autoDetect; }
+    public boolean isLengthIncludesHeader() { return lengthIncludesHeader; }
     public int getFixedResponseLength() { return fixedResponseLength; }
     public byte[] getResponseTerminator() { return responseTerminator; }
     public int getIdleGapMs() { return idleGapMs; }
@@ -58,6 +66,7 @@ public class FramingOptions {
         private int lengthHeaderSize = 2;
         private ByteOrder byteOrder = ByteOrder.BIG_ENDIAN;
         private boolean autoDetect = false;
+        private boolean lengthIncludesHeader = false;
         private int fixedResponseLength = 0;
         private byte[] responseTerminator = null;
         private int idleGapMs = 150;
@@ -85,6 +94,17 @@ public class FramingOptions {
 
         public Builder autoDetect(boolean value) {
             this.autoDetect = value;
+            return this;
+        }
+
+        /**
+         * When true, the length header value will be computed as:
+         * headerValue = payloadLength + lengthHeaderSize.
+         * When receiving with a header, the payload length will be interpreted as:
+         * payloadLength = headerValue - lengthHeaderSize.
+         */
+        public Builder lengthIncludesHeader(boolean value) {
+            this.lengthIncludesHeader = value;
             return this;
         }
 

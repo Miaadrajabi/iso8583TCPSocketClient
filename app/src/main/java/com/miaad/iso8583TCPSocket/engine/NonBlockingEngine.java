@@ -587,10 +587,11 @@ public class NonBlockingEngine implements ConnectionEngine {
         ByteBuffer buffer = ByteBuffer.allocate(eff.getLengthHeaderSize());
         buffer.order(eff.getByteOrder());
         
+        int value = length + (eff.isLengthIncludesHeader() ? eff.getLengthHeaderSize() : 0);
         if (eff.getLengthHeaderSize() == 2) {
-            buffer.putShort((short) (length & 0xFFFF));
+            buffer.putShort((short) (value & 0xFFFF));
         } else {
-            buffer.putInt(length);
+            buffer.putInt(value);
         }
         
         return buffer.array();
@@ -618,7 +619,13 @@ public class NonBlockingEngine implements ConnectionEngine {
             hb.flip();
             byte[] header = new byte[eff.getLengthHeaderSize()];
             hb.get(header);
-            int responseLength = parseLength(header, eff);
+            int headerValue = parseLength(header, eff);
+            int responseLength = eff.isLengthIncludesHeader()
+                ? (headerValue - eff.getLengthHeaderSize())
+                : headerValue;
+            if (responseLength < 0) {
+                throw new IOException("Invalid response length parsed from header");
+            }
             changeState(ConnectionState.HEADER_RECEIVED, "NIO header received");
             if (stateListener != null) {
                 stateListener.onResponseHeaderReceived(header, responseLength, 
