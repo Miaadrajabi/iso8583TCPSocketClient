@@ -5,6 +5,7 @@ import com.miaad.iso8583TCPSocket.ConnectionStateListener;
 import com.miaad.iso8583TCPSocket.ConnectionStatus;
 import com.miaad.iso8583TCPSocket.ConnectionMode;
 import com.miaad.iso8583TCPSocket.IsoConfig;
+import com.miaad.iso8583TCPSocket.IsoLogger;
 import com.miaad.iso8583TCPSocket.IsoResponse;
 import com.miaad.iso8583TCPSocket.RetryConfig;
 import com.miaad.iso8583TCPSocket.FramingOptions;
@@ -32,6 +33,7 @@ public class BlockingEngine implements ConnectionEngine {
     public IsoConfig config;
     private ConnectionStateListener stateListener;
     private Socket socket;
+    private IsoLogger logger = IsoLogger.noOp();
     private final int defaultLengthHeaderSize;
     private final ByteOrder defaultByteOrder;
     private final byte[] lengthHeaderBuffer;
@@ -58,6 +60,11 @@ public class BlockingEngine implements ConnectionEngine {
     public void initialize(IsoConfig config, ConnectionStateListener stateListener) {
         this.config = config;
         this.stateListener = stateListener;
+        if (config != null && config.getLoggingConfig() != null && config.getLoggingConfig().isEnabled()) {
+            this.logger = new IsoLogger(config.getLoggingConfig(), stateListener);
+        } else {
+            this.logger = IsoLogger.noOp();
+        }
     }
 
     @Override
@@ -67,6 +74,11 @@ public class BlockingEngine implements ConnectionEngine {
         } else {
             this.framingOptions = options;
         }
+    }
+
+    @Override
+    public void setLogger(IsoLogger logger) {
+        this.logger = (logger != null) ? logger : IsoLogger.noOp();
     }
 
     @Override
@@ -263,6 +275,9 @@ public class BlockingEngine implements ConnectionEngine {
         if (stateListener != null) {
             stateListener.onSendStarted(message.length, "ISO-8583");
         }
+        if (config != null && config.getLoggingConfig() != null && config.getLoggingConfig().isLogSends()) {
+            logger.info(getClass().getSimpleName(), "sendAndReceive", "Preparing to send " + message.length + " bytes");
+        }
         
         long startTime = System.currentTimeMillis();
 
@@ -276,10 +291,14 @@ public class BlockingEngine implements ConnectionEngine {
             if (stateListener != null) {
                 stateListener.onFrameCreated("Length-Prefixed", eff.getLengthHeaderSize(), message.length);
             }
+            if (config.getLoggingConfig() != null && config.getLoggingConfig().isLogHeaders()) {
+                logger.debug(getClass().getSimpleName(), "sendAndReceive", "Created header size=" + eff.getLengthHeaderSize());
+            }
         } else {
             if (stateListener != null) {
                 stateListener.onFrameCreated("Raw", 0, message.length);
             }
+            logger.debug(getClass().getSimpleName(), "sendAndReceive", "Sending raw message without header");
         }
         
         changeState(ConnectionState.SENDING_DATA, "Sending data");
@@ -301,6 +320,10 @@ public class BlockingEngine implements ConnectionEngine {
             stateListener.onDataTransmissionCompleted(total, 
                 System.currentTimeMillis() - startTime);
         }
+        if (config.getLoggingConfig() != null && config.getLoggingConfig().isLogSends()) {
+            logger.debug(getClass().getSimpleName(), "sendAndReceive", "Data sent",
+                    null, config.getLoggingConfig().isIncludePayloads() ? message : null, "SEND");
+        }
         
         // Wait for response
         changeState(ConnectionState.WAITING_RESPONSE, "Waiting for response");
@@ -315,6 +338,10 @@ public class BlockingEngine implements ConnectionEngine {
         if (stateListener != null) {
             stateListener.onResponseDataReceived(responseData, responseData.length,
                 System.currentTimeMillis() - startTime);
+        }
+        if (config.getLoggingConfig() != null && config.getLoggingConfig().isLogReceives()) {
+            logger.debug(getClass().getSimpleName(), "sendAndReceive", "Data received (" + responseData.length + " bytes)",
+                    null, responseData, "RECV");
         }
         
         // Process response
@@ -352,9 +379,12 @@ public class BlockingEngine implements ConnectionEngine {
                 if (n < 0) {
                     if (eff.isAutoDetect()) {
                         // fallback to raw receive
+                        logger.warn(getClass().getSimpleName(), "readResponse", "EOF while reading header, auto-detect fallback");
                         return readWithoutHeader(in, eff, startTime);
                     }
-                    throw new IOException("Connection closed while reading header");
+                    IOException ex = new IOException("Connection closed while reading header");
+                    logger.error(getClass().getSimpleName(), "readResponse", "Header read failed", ex);
+                    throw ex;
                 }
                 headerRead += n;
             }
@@ -363,7 +393,12 @@ public class BlockingEngine implements ConnectionEngine {
                 ? (headerValue - eff.getLengthHeaderSize())
                 : headerValue;
             if (responseLength < 0) {
-                throw new IOException("Invalid response length parsed from header");
+                IOException ex = new IOException("Invalid response length parsed from header");
+                logger.error(getClass().getSimpleName(), "readResponse", "Invalid length", ex);
+                throw ex;
+            }
+            if (config.getLoggingConfig() != null && config.getLoggingConfig().isLogHeaders()) {
+                logger.debug(getClass().getSimpleName(), "readResponse", "Parsed header value=" + headerValue + " -> payloadLen=" + responseLength, null, null, "RECV");
             }
             changeState(ConnectionState.HEADER_RECEIVED, "Header received");
             if (stateListener != null) {

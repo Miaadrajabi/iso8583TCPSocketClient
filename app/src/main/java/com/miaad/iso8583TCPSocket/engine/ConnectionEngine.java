@@ -4,6 +4,7 @@ import com.miaad.iso8583TCPSocket.ConnectionState;
 import com.miaad.iso8583TCPSocket.ConnectionStateListener;
 import com.miaad.iso8583TCPSocket.ConnectionStatus;
 import com.miaad.iso8583TCPSocket.IsoConfig;
+import com.miaad.iso8583TCPSocket.IsoLogger;
 import com.miaad.iso8583TCPSocket.IsoResponse;
 import com.miaad.iso8583TCPSocket.FramingOptions;
 
@@ -83,4 +84,9 @@ public interface ConnectionEngine {
      * Update framing options at runtime
      */
     void setFramingOptions(FramingOptions options);
+
+    /**
+     * Set structured logger
+     */
+    void setLogger(IsoLogger logger);
 }

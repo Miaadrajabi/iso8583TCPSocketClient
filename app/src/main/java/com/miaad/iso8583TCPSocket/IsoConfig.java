@@ -21,6 +21,7 @@ public class IsoConfig {
     private final int maxMessageSizeBytes;
     private final int nioSelectIntervalMs;
     private final boolean enableHotPathLogs;
+    private final LoggingConfig loggingConfig;
 
     private IsoConfig(Builder builder) {
         this.host = builder.host;
@@ -39,6 +40,7 @@ public class IsoConfig {
         this.maxMessageSizeBytes = builder.maxMessageSizeBytes;
         this.nioSelectIntervalMs = builder.nioSelectIntervalMs;
         this.enableHotPathLogs = builder.enableHotPathLogs;
+        this.loggingConfig = builder.loggingConfig;
     }
     
     public String getHost() { return host; }
@@ -57,6 +59,7 @@ public class IsoConfig {
     public int getMaxMessageSizeBytes() { return maxMessageSizeBytes; }
     public int getNioSelectIntervalMs() { return nioSelectIntervalMs; }
     public boolean isEnableHotPathLogs() { return enableHotPathLogs; }
+    public LoggingConfig getLoggingConfig() { return loggingConfig; }
     
     public static class Builder {
         private String host;
@@ -76,6 +79,7 @@ public class IsoConfig {
         private int maxMessageSizeBytes = 0; // 0 => disabled/not used
         private int nioSelectIntervalMs = 1000; // default existing behavior
         private boolean enableHotPathLogs = true; // keep printing by default
+        private LoggingConfig loggingConfig = null;
         
         public Builder(String host, int port) {
             this.host = host;
@@ -153,6 +157,11 @@ public class IsoConfig {
 
         public Builder enableHotPathLogs(boolean enable) {
             this.enableHotPathLogs = enable;
+            return this;
+        }
+
+        public Builder loggingConfig(LoggingConfig loggingConfig) {
+            this.loggingConfig = loggingConfig;
             return this;
         }
 

@@ -5,6 +5,7 @@ import com.miaad.iso8583TCPSocket.ConnectionStateListener;
 import com.miaad.iso8583TCPSocket.ConnectionStatus;
 import com.miaad.iso8583TCPSocket.ConnectionMode;
 import com.miaad.iso8583TCPSocket.IsoConfig;
+import com.miaad.iso8583TCPSocket.IsoLogger;
 import com.miaad.iso8583TCPSocket.IsoResponse;
 import com.miaad.iso8583TCPSocket.RetryConfig;
 import com.miaad.iso8583TCPSocket.FramingOptions;
@@ -29,6 +30,7 @@ public class NonBlockingEngine implements ConnectionEngine {
     private ConnectionStateListener stateListener;
     private SocketChannel channel;
     private Selector selector;
+    private IsoLogger logger = IsoLogger.noOp();
     private final int defaultLengthHeaderSize;
     private final ByteOrder defaultByteOrder;
     private ByteBuffer headerBuffer;
@@ -54,6 +56,11 @@ public class NonBlockingEngine implements ConnectionEngine {
     public void initialize(IsoConfig config, ConnectionStateListener stateListener) {
         this.config = config;
         this.stateListener = stateListener;
+        if (config != null && config.getLoggingConfig() != null && config.getLoggingConfig().isEnabled()) {
+            this.logger = new IsoLogger(config.getLoggingConfig(), stateListener);
+        } else {
+            this.logger = IsoLogger.noOp();
+        }
     }
 
     @Override
@@ -63,6 +70,11 @@ public class NonBlockingEngine implements ConnectionEngine {
         } else {
             this.framingOptions = options;
         }
+    }
+
+    @Override
+    public void setLogger(IsoLogger logger) {
+        this.logger = (logger != null) ? logger : IsoLogger.noOp();
     }
 
     @Override
@@ -304,12 +316,16 @@ public class NonBlockingEngine implements ConnectionEngine {
             if (stateListener != null) {
                 stateListener.onFrameCreated("Length-Prefixed NIO", lengthHeader.length, message.length);
             }
+            if (config.getLoggingConfig() != null && config.getLoggingConfig().isLogHeaders()) {
+                logger.debug(getClass().getSimpleName(), "sendAndReceive", "Created header size=" + eff.getLengthHeaderSize());
+            }
         } else {
             sendBuffer = ByteBuffer.allocate(message.length);
             sendBuffer.put(message);
             if (stateListener != null) {
                 stateListener.onFrameCreated("Raw NIO", 0, message.length);
             }
+            logger.debug(getClass().getSimpleName(), "sendAndReceive", "Sending raw message without header");
         }
         sendBuffer.flip();
         
@@ -339,6 +355,10 @@ public class NonBlockingEngine implements ConnectionEngine {
             stateListener.onDataTransmissionCompleted(totalToSend, 
                 System.currentTimeMillis() - startTime);
         }
+        if (config.getLoggingConfig() != null && config.getLoggingConfig().isLogSends()) {
+            logger.debug(getClass().getSimpleName(), "sendAndReceive", "Data sent (NIO)", null,
+                    config.getLoggingConfig().isIncludePayloads() ? message : null, "SEND");
+        }
         
         // Read response
         changeState(ConnectionState.WAITING_RESPONSE, "Waiting for NIO response");
@@ -352,6 +372,9 @@ public class NonBlockingEngine implements ConnectionEngine {
         if (stateListener != null) {
             stateListener.onResponseDataReceived(responseData, responseData.length,
                 System.currentTimeMillis() - startTime);
+        }
+        if (config.getLoggingConfig() != null && config.getLoggingConfig().isLogReceives()) {
+            logger.debug(getClass().getSimpleName(), "sendAndReceive", "Data received (NIO) " + responseData.length + " bytes", null, responseData, "RECV");
         }
         
         // Process response
@@ -624,7 +647,12 @@ public class NonBlockingEngine implements ConnectionEngine {
                 ? (headerValue - eff.getLengthHeaderSize())
                 : headerValue;
             if (responseLength < 0) {
-                throw new IOException("Invalid response length parsed from header");
+                IOException ex = new IOException("Invalid response length parsed from header");
+                logger.error(getClass().getSimpleName(), "readResponseNio", "Invalid length", ex);
+                throw ex;
+            }
+            if (config.getLoggingConfig() != null && config.getLoggingConfig().isLogHeaders()) {
+                logger.debug(getClass().getSimpleName(), "readResponseNio", "Parsed header value=" + headerValue + " -> payloadLen=" + responseLength, null, null, "RECV");
             }
             changeState(ConnectionState.HEADER_RECEIVED, "NIO header received");
             if (stateListener != null) {

@@ -18,6 +18,7 @@ public class IsoClient {
     private RetryCallback retryCallback;
     private ConnectionStateListener stateListener;
     private FramingOptions framingOptions;
+    private IsoLogger logger = IsoLogger.noOp();
     
     /**
      * Create ISO-8583 client with 2-byte length header (default)
@@ -48,6 +49,13 @@ public class IsoClient {
         
         // Initialize engine
         this.engine.initialize(config, null); // StateListener will be set later
+        // Initialize logger from config
+        if (config.getLoggingConfig() != null && config.getLoggingConfig().isEnabled()) {
+            this.logger = new IsoLogger(config.getLoggingConfig(), null);
+        } else {
+            this.logger = IsoLogger.noOp();
+        }
+        this.engine.setLogger(this.logger);
         this.engine.setFramingOptions(this.framingOptions);
         this.engine.setCancelled(cancelled);
     }
@@ -129,9 +137,11 @@ public class IsoClient {
         // Re-initialize engine with the new listener
         if (engine instanceof BlockingEngine) {
             ((BlockingEngine) engine).initialize(((BlockingEngine) engine).config, listener);
+            ((BlockingEngine) engine).setLogger(this.logger);
             ((BlockingEngine) engine).setFramingOptions(this.framingOptions);
         } else if (engine instanceof NonBlockingEngine) {
             ((NonBlockingEngine) engine).initialize(((NonBlockingEngine) engine).config, listener);
+            ((NonBlockingEngine) engine).setLogger(this.logger);
             ((NonBlockingEngine) engine).setFramingOptions(this.framingOptions);
         }
     }
@@ -142,6 +152,25 @@ public class IsoClient {
     public void updateFraming(FramingOptions options) {
         this.framingOptions = options != null ? options : FramingOptions.defaults(2, ByteOrder.BIG_ENDIAN);
         engine.setFramingOptions(this.framingOptions);
+    }
+
+    /**
+     * Update logging configuration at runtime
+     */
+    public void updateLogging(LoggingConfig loggingConfig) {
+        if (loggingConfig != null && loggingConfig.isEnabled()) {
+            this.logger = new IsoLogger(loggingConfig, this.stateListener);
+        } else {
+            this.logger = IsoLogger.noOp();
+        }
+        engine.setLogger(this.logger);
+    }
+
+    /**
+     * Retrieve captured logs (if in-memory capture is enabled)
+     */
+    public java.util.List<com.miaad.iso8583TCPSocket.logging.LogEntry> getCapturedLogs() {
+        return this.logger.getCapturedLogs();
     }
 
     /**
