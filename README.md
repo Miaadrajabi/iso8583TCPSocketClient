@@ -258,6 +258,8 @@ IsoClient client = new IsoClient(config, 4, ByteOrder.LITTLE_ENDIAN);
 
 This section documents advanced message framing options and modes. By default, nothing changes: the client behaves exactly like before (length-prefixed with a 2-byte BIG_ENDIAN header). You can opt-in to other modes using FramingOptions.
 
+See the full guide: docs/CONFIG_MODES.md
+
 ### FramingOptions Overview
 
 - sendLengthHeader (default: true): If true, a length header (2 or 4 bytes) is prepended on send.
@@ -377,6 +379,27 @@ FramingOptions fourLE = FramingOptions.builder()
     .build();
 
 client.updateFraming(fourLE);
+```
+
+### Advanced Logging (Quick Start)
+```java
+LoggingConfig logs = LoggingConfig.builder()
+    .enabled(true)
+    .minimumLevel(com.miaad.iso8583TCPSocket.logging.LogLevel.DEBUG)
+    .includePayloads(true)
+    .logSends(true).logReceives(true).logHeaders(true).logErrors(true).logState(true)
+    .captureInMemory(true)
+    .inMemoryCapacity(1000)
+    .build();
+
+IsoConfig config = new IsoConfig.Builder("host", 8583)
+    .loggingConfig(logs)
+    .build();
+
+IsoClient client = new IsoClient(config, 2, ByteOrder.BIG_ENDIAN);
+// later
+client.updateLogging(logs);
+List<com.miaad.iso8583TCPSocket.logging.LogEntry> entries = client.getCapturedLogs();
 ```
 
 ### Per-Message Policy (e.g., choose by MTI)
