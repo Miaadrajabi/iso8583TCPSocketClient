@@ -2,6 +2,10 @@
 
 A lightweight, high-performance ISO-8583 TCP socket library for Android with comprehensive status monitoring, dual engine support, and production-ready features.
 
+## Latest
+- Current version: 1.3.1
+- Configuration Modes & Framing Guide: [docs/CONFIG_MODES.md](docs/CONFIG_MODES.md)
+
 ## 🚀 Features
 
 - **🔧 Dual Engine Support**: Both blocking and non-blocking (NIO) I/O engines
@@ -36,7 +40,7 @@ Then add the dependency to your app's `build.gradle`:
 
 ```gradle
 dependencies {
-    implementation 'com.github.Miaadrajabi:iso8583TCPSocketClient:1.2.0'
+    implementation 'com.github.Miaadrajabi:iso8583TCPSocketClient:1.3.1'
 }
 ```
 
@@ -46,7 +50,7 @@ dependencies {
 <dependency>
     <groupId>com.github.Miaadrajabi</groupId>
     <artifactId>iso8583TCPSocketClient</artifactId>
-    <version>1.2.0</version>
+    <version>1.3.1</version>
 </dependency>
 ```
 
@@ -258,7 +262,7 @@ IsoClient client = new IsoClient(config, 4, ByteOrder.LITTLE_ENDIAN);
 
 This section documents advanced message framing options and modes. By default, nothing changes: the client behaves exactly like before (length-prefixed with a 2-byte BIG_ENDIAN header). You can opt-in to other modes using FramingOptions.
 
-See the full guide: docs/CONFIG_MODES.md
+See the full guide: [docs/CONFIG_MODES.md](docs/CONFIG_MODES.md)
 
 ### FramingOptions Overview
 
