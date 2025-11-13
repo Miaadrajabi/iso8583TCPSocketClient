@@ -2,6 +2,23 @@
 
 All notable changes to the iso8583TCPSocket library will be documented in this file.
 
+## [1.3.1] - 2025-11-11
+
+### Added
+- LoggingConfig and IsoLogger: structured logging with in-memory capture and external sink hook
+- Engine instrumentation for send/receive/header/error events
+- Debug logging overload for payload + direction
+- Documentation: config modes guide (docs/CONFIG_MODES.md) and README link; logging quick start
+
+### Changed
+- Cleanup: remove legacy duplicate classes outside engine/
+
+## [1.3.0] - 2025-11-11
+
+### Added
+- FramingOptions.lengthIncludesHeader: optionally include header size in length value (send/receive)
+- Sample: “Send (No Header)” example in MainActivity
+
 ## [1.2.0] - 2025-11-11
 
 ### ✨ Added
